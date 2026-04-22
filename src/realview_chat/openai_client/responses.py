@@ -42,10 +42,15 @@ class OpenAIBackend:
                 },
             )
             choice = response.choices[0]
-            output_text = choice.message.content
-            if not output_text:
-                raise ValueError("Empty response output")
-            return json.loads(output_text)
+            message = choice.message
+
+            if hasattr(message, "parsed") and message.parsed:
+                return message.parsed
+
+            if message.content:
+                return json.loads(message.content)
+
+            raise ValueError("No valid model output")
 
         return with_retry(
             execute,

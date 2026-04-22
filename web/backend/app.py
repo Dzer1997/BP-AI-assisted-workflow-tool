@@ -4,8 +4,14 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, request, send_from_directory
 from flask_cors import CORS
+from sqlalchemy.orm import joinedload
+
+from realview_chat.config import Settings
+from realview_chat.database import db
+from realview_chat.database.db import SessionLocal, init_db
+from realview_chat.database.models import Case, Feedback, FeedbackFeature, FeedbackScore
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 OUT_DIR = PROJECT_ROOT / "out"
@@ -16,61 +22,105 @@ CASES_ROOT = PROJECT_ROOT / "cases"
 
 app = Flask(__name__)
 CORS(app)
-
+init_db()
 
 @app.route("/api/properties", methods=["GET"])
 def get_properties():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    db = SessionLocal()
+
+    cases = db.query(Case).all()
+
     properties = []
-    for path in sorted(OUT_DIR.glob("results_*.json")):
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-            properties.append(data)
-        except (json.JSONDecodeError, OSError):
-            continue
-    # fallback for legacy single-file format
-    if not properties and (OUT_DIR / "results.json").exists():
-        try:
-            with open(OUT_DIR / "results.json", encoding="utf-8") as f:
-                data = json.load(f)
-            if data and isinstance(data, dict) and "property_id" in data:
-                properties.append(data)
-        except (json.JSONDecodeError, OSError):
-            pass
+    
+    for case in cases:
+        images_list = []
+        rooms_list = []
+
+        for r in case.pass25_results:
+                rooms_list.append({
+                    "room_type": r.room_type,
+                    "room_condition_score": r.condition_score,
+                    "room_modernity_score": r.modernity_score,
+                    "room_material_score": r.material_score,
+                    "room_functionality_score": r.functionality_score,
+                    "confidence": r.confidence
+                })
+
+        for img in case.images:
+            p2 = img.pass2_result
+            pass2_features = []
+            p1 = img.pass1_result
+            pass1_data = None
+            if p1:
+                pass1_data = {
+                    "room_type": p1.room_type,
+                    "actionable": p1.actionable,
+                    "confidence": p1.pass1_confidence,
+            }
+
+            if p2:
+                for f in p2.features:
+                    pass2_features.append({
+                        "feature_id": f.feature_id,
+                        "severity": f.severity,
+                        "confidence": f.confidence,
+                        "explanation": f.explanation
+                    })
+
+            images_list.append({
+                "filename": img.file_path,
+                "pass1": pass1_data,
+                "pass2":pass2_features
+            })
+                
+        properties.append({
+            "property_id": case.folder_name,
+            "created_at": case.created_at.isoformat(),
+            "images": images_list,  
+            "rooms": rooms_list   
+        })
+
+    db.close()
     return jsonify(properties)
 
 
 @app.route("/api/images/<property_id>/<path:filename>", methods=["GET"])
 def serve_image(property_id, filename):
-    base = Path(filename).name
-    if base != filename:
-        return jsonify({"error": "Invalid filename"}), 400
-    case_folder = property_id if str(property_id).startswith("case_") else f"case_{property_id}"
-    case_dir = CASES_ROOT / case_folder
-    if not case_dir.exists() or not case_dir.is_dir():
-        return jsonify({"error": "Property image folder not found"}), 404
-    path = case_dir / base
-    if not path.exists() or not path.is_file():
-        return jsonify({"error": "Image not found"}), 404
-    return send_from_directory(str(case_dir), base)
+    case_folder = CASES_ROOT / f"case_{property_id}"
 
+    if not case_folder.exists():
+        abort(404, description="Case not found")
+
+    file_path = case_folder / filename
+
+    if not file_path.exists():
+        abort(404, description="Image not found")
+    
+    return send_from_directory(case_folder, filename)
 
 @app.route("/api/feedback", methods=["GET"])
 def get_feedback():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    if not FEEDBACK_PATH.exists():
-        return jsonify([])
-    try:
-        with open(FEEDBACK_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-        return jsonify(data if isinstance(data, list) else [])
-    except (json.JSONDecodeError, OSError):
-        return jsonify([])
+    db = SessionLocal()
 
+    feedback_entries = db.query(Feedback).all()
+
+    result = []
+
+    for fb in feedback_entries:
+        result.append({
+            "property_id": fb.property_id,
+            "filename": fb.filename,
+            "classification": fb.classification
+        })
+
+    db.close()
+    return jsonify(result)
+    
 
 @app.route("/api/feedback", methods=["POST"])
 def post_feedback():
+    db = SessionLocal()
+
     body = request.get_json(silent=True)
     if not body:
         return jsonify({"error": "JSON body required"}), 400
@@ -79,63 +129,61 @@ def post_feedback():
         if field not in body:
             return jsonify({"error": f"Missing required field: {field}"}), 400
 
-    entry = {
-        "property_id": body["property_id"],
-        "filename": body["filename"],
-    }
-
-    has_verdict = "feature_id" in body and "verdict" in body
     has_classification = "classification" in body
+    has_verdict = "feature_id" in body and "verdict" in body
     has_score = "score_type" in body and "value" in body
 
-    if not has_verdict and not has_classification and not has_score:
-        return jsonify({"error": "Must provide (feature_id + verdict), classification, or (score_type + value)"}), 400
-
-    if has_verdict:
-        entry["feature_id"] = body["feature_id"]
-        entry["verdict"] = body["verdict"]
+    if not has_classification and not has_verdict and not has_score:
+        return jsonify({"error": "Invalid feedback type"}), 400
 
     if has_classification:
-        valid_classifications = ("correct", "fp", "fn")
-        if body["classification"] not in valid_classifications:
-            return jsonify({"error": f"classification must be one of: {', '.join(valid_classifications)}"}), 400
-        entry["classification"] = body["classification"]
+        if body["classification"] not in ["correct", "fp", "fn"]:
+            return jsonify({"error": "Invalid classification"}), 400
 
     if has_score:
-        valid_score_types = ("condition", "modernity", "material", "functionality")
-        score_type = body["score_type"]
-        if score_type not in valid_score_types:
-            return jsonify({"error": f"score_type must be one of: {', '.join(valid_score_types)}"}), 400
+        if body["score_type"] not in ["condition", "modernity", "material", "functionality"]:
+            return jsonify({"error": "Invalid score_type"}), 400
+
         try:
             value = int(body["value"])
-        except (TypeError, ValueError):
-            return jsonify({"error": "value must be an integer"}), 400
+        except:
+            return jsonify({"error": "value must be int"}), 400
+
         if value < 1 or value > 5:
             return jsonify({"error": "value must be between 1 and 5"}), 400
-        entry["score_type"] = score_type
-        entry["value"] = value
-        entry["timestamp"] = datetime.now(timezone.utc).isoformat()
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    if FEEDBACK_PATH.exists():
-        try:
-            with open(FEEDBACK_PATH, encoding="utf-8") as f:
-                feedback = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            feedback = []
-    else:
-        feedback = []
-    feedback.append(entry)
-    try:
-        with open(FEEDBACK_PATH, "w", encoding="utf-8") as f:
-            json.dump(feedback, f, indent=2)
-    except OSError as e:
-        return jsonify({"error": str(e)}), 500
 
-    # approved images get copied to ground truth folder
-    if entry.get("classification") == "correct":
-        _copy_to_ground_truth(entry["property_id"], entry["filename"])
+    fb = Feedback(
+        property_id=body["property_id"],
+        filename=body["filename"],
+        classification=body.get("classification")
+    )
 
-    return jsonify({"ok": True, "entry": entry}), 201
+    db.add(fb)
+    db.flush()  
+
+    if has_score:
+        score = FeedbackScore(
+            feedback_id=fb.id,
+            score_type=body["score_type"],
+            value=value
+        )
+        db.add(score)
+
+    if has_verdict:
+        feat = FeedbackFeature(
+            feedback_id=fb.id,
+            feature_id=body["feature_id"],
+            verdict=body["verdict"]
+        )
+        db.add(feat)
+
+    db.commit()
+    db.close()
+
+    if body.get("classification") == "correct":
+        _copy_to_ground_truth(body["property_id"], body["filename"])
+
+    return jsonify({"ok": True, "entry": body}), 201
 
 
 def _copy_to_ground_truth(property_id: str, filename: str) -> None:
@@ -256,20 +304,16 @@ def _total_to_grade(total: int) -> tuple[str, str]:
 
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
-    feedback = []
-    if FEEDBACK_PATH.exists():
-        try:
-            with open(FEEDBACK_PATH, encoding="utf-8") as f:
-                feedback = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            feedback = []
+    feedback = db.query(Feedback).all()
 
-    # dedup: only keep the latest classification per image
-    latest: dict[tuple[str, str], str] = {}
-    for entry in feedback:
-        cls = entry.get("classification")
-        if cls:
-            latest[(entry["property_id"], entry["filename"])] = cls
+    latest = {}
+
+    # dedup gem kun en entry
+    # sidste skriver over de tidligere
+    for fb in feedback:
+        key = (fb.property_id, fb.filename)
+        value = fb.classification
+        latest[key] = value
 
     correct = sum(1 for v in latest.values() if v == "correct")
     fp = sum(1 for v in latest.values() if v == "fp")
@@ -277,9 +321,11 @@ def get_stats():
 
     precision = (correct / (correct + fp) * 100) if (correct + fp) > 0 else 0
     recall = (correct / (correct + fn) * 100) if (correct + fn) > 0 else 0
-
+    
     ai_scores = _load_ai_scores()
     calibration = _compute_calibration(feedback, ai_scores)
+
+    db.close()
 
     return jsonify({
         "correct": correct,
@@ -294,12 +340,14 @@ def get_stats():
 
 @app.route("/api/reset", methods=["DELETE"])
 def reset_benchmarking():
-    try:
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-        with open(FEEDBACK_PATH, "w", encoding="utf-8") as f:
-            json.dump([], f)
-    except OSError as e:
-        return jsonify({"error": f"Failed to clear feedback: {e}"}), 500
+    db = SessionLocal()
+
+    db.query(FeedbackScore).delete()
+    db.query(FeedbackFeature).delete()
+    db.query(Feedback).delete()
+    db.commit()
+
+    db.close()
 
     try:
         if GROUND_TRUTH_DIR.exists():
@@ -335,122 +383,128 @@ def serve_ground_truth_image(filename):
 
 @app.route("/api/summary", methods=["GET"])
 def get_summary():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    db = SessionLocal()
 
-    total_images = 0
-    kitchen_count = 0
-    bathroom_count = 0
-    kb_actionable = 0
-    kb_total = 0
-    feature_counter: Counter[str] = Counter()
-    proposal_image_counts: list[int] = []
+    try:
+        cases = db.query(Case).all()
 
-    severity_counter: Counter[str] = Counter()
-    kitchen_damage: Counter[str] = Counter()
-    bathroom_damage: Counter[str] = Counter()
+        total_images = 0
+        kitchen_count = 0
+        bathroom_count = 0
+        kb_actionable = 0
+        kb_total = 0
+        feature_counter: Counter[str] = Counter()
+        proposal_image_counts: list[int] = []
 
-    p1_confidence_sum = 0.0
-    p1_confidence_n = 0
-    p2_confidence_sum = 0.0
-    p2_confidence_n = 0
+        severity_counter: Counter[str] = Counter()
+        kitchen_damage: Counter[str] = Counter()
+        bathroom_damage: Counter[str] = Counter()
 
-    property_damage: dict[str, dict[str, int]] = {}
-    property_room_grades: list[dict] = []
+        p1_confidence_sum = 0.0
+        p1_confidence_n = 0
+        p2_confidence_sum = 0.0
+        p2_confidence_n = 0
 
-    for path in sorted(OUT_DIR.glob("results_*.json")):
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            continue
+        property_damage: dict[str, dict[str, int]] = {}
+        property_room_grades: list[dict] = []
 
-        prop_id = data.get("property_id", path.stem)
-        images = data.get("images", [])
-        proposal_image_counts.append(len(images))
-        total_images += len(images)
-        prop_high = 0
-        prop_total_dmg = 0
+        for case in cases:
 
-        for img in images:
-            p1 = img.get("pass1", {})
-            room = p1.get("room_type", "").lower()
-            actionable = p1.get("actionable", False)
+            prop_id = case.folder_name
+            images = case.images
+            proposal_image_counts.append(len(images))
+            total_images += len(images)
+            prop_high = 0
+            prop_total_dmg = 0
 
-            p1_conf = p1.get("confidence")
-            if p1_conf is not None:
-                p1_confidence_sum += p1_conf
-                p1_confidence_n += 1
+            for img in images:
+                p1 = img.pass1_result
+                room_type = None
+                actionable = False
+                if p1:
+                    room_type = p1.room_type
+                    actionable = p1.actionable
 
-            if room == "kitchen":
-                kitchen_count += 1
-                kb_total += 1
-                if actionable:
-                    kb_actionable += 1
-            elif room == "bathroom":
-                bathroom_count += 1
-                kb_total += 1
-                if actionable:
-                    kb_actionable += 1
+                p1_conf = p1.pass1_confidence if p1 else None
+                if p1_conf is not None:
+                    p1_confidence_sum += p1_conf
+                    p1_confidence_n += 1
 
-            for feature in img.get("pass2", []):
-                fid = feature.get("feature_id")
-                if not fid:
-                    continue
-
-                feature_counter[fid] += 1
-                prop_total_dmg += 1
-
-                sev = (feature.get("severity") or "").lower()
-                if sev:
-                    severity_counter[sev] += 1
-                if sev == "high":
-                    prop_high += 1
-
-                if room == "kitchen":
-                    kitchen_damage[fid] += 1
+                if room_type == "kitchen":
+                    kitchen_count += 1
+                    kb_total += 1
+                    if actionable:
+                        kb_actionable += 1
                 elif room == "bathroom":
-                    bathroom_damage[fid] += 1
+                    bathroom_count += 1
+                    kb_total += 1
+                    if actionable:
+                        kb_actionable += 1
 
-                p2_conf = feature.get("confidence")
-                if p2_conf is not None:
-                    p2_confidence_sum += p2_conf
-                    p2_confidence_n += 1
+                p2 = img.pass2_result
+                if p2:
+                    for feature in p2.features:
+                        fid = feature.feature_id
+                        
+                        if not fid:
+                            continue
 
-        property_damage[prop_id] = {"high": prop_high, "total": prop_total_dmg}
+                        feature_counter[fid] += 1
+                        prop_total_dmg += 1
 
-        rooms_graded = []
-        for room in data.get("rooms", []):
-            scores = {
-                "condition": room.get("room_condition_score"),
-                "modernity": room.get("room_modernity_score"),
-                "material": room.get("room_material_score"),
-                "functionality": room.get("room_functionality_score"),
-            }
-            values = [v for v in scores.values() if v is not None]
-            if len(values) == 4:
-                total = sum(values)
-                grade, grade_label = _total_to_grade(total)
-                rooms_graded.append({
-                    "room_type": room.get("room_type", "unknown"),
-                    **scores,
-                    "total": total,
-                    "grade": grade,
-                    "grade_label": grade_label,
-                })
-        if rooms_graded:
-            property_room_grades.append({
-                "property_id": prop_id,
-                "rooms": rooms_graded,
-            })
+                        sev = (feature.severity or "").lower()
+                        if sev:
+                            severity_counter[sev] += 1
+                        if sev == "high":
+                            prop_high += 1
 
-    actionability_rate = (kb_actionable / kb_total * 100) if kb_total > 0 else 0
-    num_proposals = len(proposal_image_counts)
-    avg_images = (total_images / num_proposals) if num_proposals > 0 else 0
+                        if room == "kitchen":
+                            kitchen_damage[fid] += 1
+                        elif room == "bathroom":
+                            bathroom_damage[fid] += 1
 
-    at_risk = sorted(
-        property_damage.items(),
-        key=lambda kv: (-kv[1]["high"], -kv[1]["total"]),
-    )[:5]
+                        p2_conf = feature.confidence
+                        if p2_conf is not None:
+                            p2_confidence_sum += p2_conf
+                            p2_confidence_n += 1
+
+                property_damage[prop_id] = {"high": prop_high, "total": prop_total_dmg}
+
+                rooms_graded = []
+                for room in case.pass25_results:
+                    scores = {
+                        "condition": room.condition_score,
+                        "modernity": room.modernity_score,
+                        "material": room.material_score,
+                        "functionality": room.functionality_score,
+                    }
+                    values = [v for v in scores.values() if v is not None]
+                    if len(values) == 4:
+                        total = sum(values)
+                        grade, grade_label = _total_to_grade(total)
+                        rooms_graded.append({
+                            "room_type": room.room_type or "unknown",
+                            **scores,
+                            "total": total,
+                            "grade": grade,
+                            "grade_label": grade_label,
+                        })
+                if rooms_graded:
+                    property_room_grades.append({
+                        "property_id": prop_id,
+                        "rooms": rooms_graded,
+                    })
+
+            actionability_rate = (kb_actionable / kb_total * 100) if kb_total > 0 else 0
+            num_proposals = len(proposal_image_counts)
+            avg_images = (total_images / num_proposals) if num_proposals > 0 else 0
+
+            at_risk = sorted(
+                property_damage.items(),
+                key=lambda kv: (-kv[1]["high"], -kv[1]["total"]),
+            )[:5]
+    finally:
+        db.close()
 
     return jsonify({
         "pipeline_funnel": {
@@ -508,6 +562,5 @@ def get_summary():
         "room_grades": property_room_grades,
     })
 
-
 if __name__ == "__main__":
-    app.run(debug=True, port=5001)  # 5001 bc macOS AirPlay hogs 5000
+    app.run(port=5001, debug=True)

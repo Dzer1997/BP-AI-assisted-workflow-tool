@@ -27,7 +27,7 @@ def with_retry(
             if attempt > max_retries:
                 raise RetryError("Exceeded max retries") from exc
 
-            sleep_time = backoff_seconds * (2 ** (attempt - 1))
+            sleep_time = max(15, backoff_seconds * (2 ** (attempt - 1)))
             if logger:
                 logger.warning("Retrying after error: %s (sleep %.2fs)", exc, sleep_time)
             time.sleep(sleep_time)

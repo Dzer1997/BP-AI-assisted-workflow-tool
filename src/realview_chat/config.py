@@ -13,6 +13,10 @@ class AppConfig:
     max_retries: int
     retry_backoff_seconds: float
 
+class Settings:
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./realview_chat.db")
+
+settings = Settings()
 
 def load_config() -> AppConfig:
     load_dotenv(override=True)

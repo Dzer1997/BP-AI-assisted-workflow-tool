@@ -28,4 +28,6 @@ out/*
 
 check_models.py
 
+realview_chat.db
+
 cases/*
