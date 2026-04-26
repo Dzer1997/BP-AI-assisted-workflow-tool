@@ -3,10 +3,6 @@ from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Float, Boo
 from sqlalchemy.orm import relationship
 from realview_chat.database.db import Base
 
-
-# -------------------------
-# PASS 1 (image-level classification)
-# -------------------------
 class pass1_results(Base):
     __tablename__ = "pass1_results"
 
@@ -21,10 +17,6 @@ class pass1_results(Base):
 
     image = relationship("Image", back_populates="pass1_result")
 
-
-# -------------------------
-# PASS 2 (image-level inspection)
-# -------------------------
 class pass2_results(Base):
     __tablename__ = "pass2_results"
 
@@ -41,10 +33,6 @@ class pass2_results(Base):
     image = relationship("Image", back_populates="pass2_result")
     features = relationship("Feature", back_populates="pass2_result", cascade="all, delete-orphan")
 
-
-# -------------------------
-# PASS 2 FEATURES
-# -------------------------
 class Feature(Base):
     __tablename__ = "features"
 
@@ -59,10 +47,6 @@ class Feature(Base):
 
     pass2_result = relationship("pass2_results", back_populates="features")
 
-
-# -------------------------
-# PASS 25 (room-level aggregation)
-# -------------------------
 class pass25_results(Base):
     __tablename__ = "pass25_results"
 
@@ -82,10 +66,6 @@ class pass25_results(Base):
 
     case = relationship("Case", back_populates="pass25_results")
 
-
-# -------------------------
-# IMAGE (source entity)
-# -------------------------
 class Image(Base):
     __tablename__ = "images"
 
@@ -100,11 +80,8 @@ class Image(Base):
 
     pass1_result = relationship("pass1_results", back_populates="image", uselist=False)
     pass2_result = relationship("pass2_results", back_populates="image", uselist=False)
+    image_id = Column(Integer, ForeignKey("images.id"))
 
-
-# -------------------------
-# CASE (root entity)
-# -------------------------
 class Case(Base):
     __tablename__ = "cases"
 

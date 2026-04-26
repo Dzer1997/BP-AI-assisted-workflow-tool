@@ -45,8 +45,6 @@ PASS2_SYSTEM = (
     "Be conservative: an old but spotlessly clean bathroom can score high on condition "
     "but low on modernity. Conversely, a recently renovated room with visible damage "
     "can score high on modernity but low on condition. Always treat all four axes independently."
-    "You MUST detect visible defects and return them as features."
-    "If any issue is visible, features MUST NOT be empty."
 )
 
 PASS25_SYSTEM = (

@@ -10,6 +10,7 @@ from realview_chat.io.image_loader import list_image_files, load_images_as_data_
 from realview_chat.pipeline.pass1 import Pass1Result, run_pass1
 from realview_chat.pipeline.pass2 import Pass2Result, run_pass2
 from realview_chat.pipeline.pass25 import Pass25Result, run_pass25
+from realview_chat.observability.logging_config import run_pipeline_step
 
 if TYPE_CHECKING:
     from realview_chat.openai_client.responses import LLMClient
@@ -36,7 +37,8 @@ def _process_images(property_id: str, image_paths: list[Path], client: LLMClient
 
     for path, data_url in images_with_urls:
         logger.info("Running pass1 for %s", path.name)
-        pass1 = run_pass1(client, data_url)  # type: ignore
+        
+        pass1 = run_pipeline_step("pass1", lambda: run_pass1(client, data_url))
         pass1_results[path.name] = pass1
 
         if not pass1.actionable or pass1.room_type not in ALLOWED_ROOMS:
@@ -46,7 +48,9 @@ def _process_images(property_id: str, image_paths: list[Path], client: LLMClient
             continue
 
         logger.info("Running pass2 for %s", path.name)
-        pass2 = run_pass2(client, data_url)  # type: ignore
+        pass2 = run_pipeline_step("pass2", lambda: run_pass2(client, data_url))
+
+        
         pass2_results[path.name] = pass2
 
     # group actionable images by room type for pass2.5 consolidation
@@ -70,7 +74,9 @@ def _process_images(property_id: str, image_paths: list[Path], client: LLMClient
         for chunk in _chunk_images(items, 4):  # max 4 images per API call
             image_data_urls = [data_url for _, data_url in chunk]
             logger.info("Running pass2.5 for room %s with %d images", room_type, len(chunk))
-            pass25_results.append(run_pass25(client, room_type, image_data_urls))  # type: ignore
+            
+            p25 = run_pipeline_step("pass25", lambda: run_pass25(client, room_type, image_data_urls))
+            pass25_results.append(p25)
 
     images = []
     for filename, pass1 in pass1_results.items():

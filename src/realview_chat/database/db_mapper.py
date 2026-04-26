@@ -1,6 +1,7 @@
 from realview_chat.database.models import (
     Case, Image, pass1_results, pass2_results, pass25_results, Feature
 )
+from realview_chat.observability.logging_config import db_operation
 
 def save_case_to_db(db, result):
     case = Case(folder_name=result["property_id"])
@@ -58,6 +59,5 @@ def save_case_to_db(db, result):
             )
         )
 
-    print("ABOUT TO COMMIT")
-    db.commit()
-    
+    print("ABOUT TO COMMIT")        
+    db_operation("save_case", lambda: db.commit())

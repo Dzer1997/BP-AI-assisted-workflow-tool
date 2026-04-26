@@ -5,6 +5,20 @@ import logging
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+OUT_DIR = PROJECT_ROOT / "out"
+FEEDBACK_PATH = OUT_DIR / "feedback.json"
+GROUND_TRUTH_DIR = OUT_DIR / "ground_truth"
+CASES_ROOT = PROJECT_ROOT / "cases"
+
+
+def init_config():
+    OUT_DIR.mkdir(exist_ok=True)
+    GROUND_TRUTH_DIR.mkdir(exist_ok=True)
+
 @dataclass(frozen=True)
 class AppConfig:
     openai_api_key: str
@@ -14,7 +28,10 @@ class AppConfig:
     retry_backoff_seconds: float
 
 class Settings:
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./realview_chat.db")
+    DATABASE_URL: str = os.getenv(
+        "DATABASE_URL",
+        f"sqlite:///{PROJECT_ROOT / 'realview_chat.db'}"
+    )
 
 settings = Settings()
 

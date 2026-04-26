@@ -7,9 +7,10 @@ from realview_chat.pipeline.property_processor import process_property_from_fold
 from realview_chat.config import load_config
 from realview_chat.openai_client.responses import create_client
 from realview_chat.database.models import Case
-from realview_chat.services.db_mapper import save_case_to_db
+from realview_chat.database.db_mapper import save_case_to_db
+from realview_chat.config import PROJECT_ROOT
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 CASES_ROOT = PROJECT_ROOT / "cases"
 
 
@@ -43,7 +44,7 @@ def run_scan_mode(client, db, delay_seconds=4, limit=None):
                 property_id=property_id,
                 client=client,
             )
-
+            
             save_case_to_db(db, result)
 
             print(f"Saved case {property_id} to database.")
