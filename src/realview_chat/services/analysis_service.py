@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -52,7 +53,7 @@ def get_properties(session):
                     })
 
             images_list.append({
-                "filename": img.file_path,
+                "filename": os.path.basename(img.file_path),
                 "pass1": pass1_data,
                 "pass2": pass2_features
             })
@@ -65,19 +66,6 @@ def get_properties(session):
         })
 
     return properties
-
-def serve_image_handler(property_id, filename):
-    case_folder = CASES_ROOT / f"case_{property_id}"
-
-    if not case_folder.exists():
-        abort(404, description="Case not found")
-
-    file_path = case_folder / filename
-
-    if not file_path.exists():
-        abort(404, description="Image not found")
-    
-    return send_from_directory(case_folder, filename)
 
 def get_feedback(session):
     feedback_entries = session.query(Feedback).all()

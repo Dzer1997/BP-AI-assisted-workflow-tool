@@ -7,12 +7,14 @@ from dotenv import load_dotenv
 
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 OUT_DIR = PROJECT_ROOT / "out"
 FEEDBACK_PATH = OUT_DIR / "feedback.json"
 GROUND_TRUTH_DIR = OUT_DIR / "ground_truth"
-CASES_ROOT = PROJECT_ROOT / "cases"
+CASES_ROOT = Path(
+    os.getenv("CASES_ROOT", PROJECT_ROOT / "cases")
+)
 
 
 def init_config():
@@ -28,9 +30,9 @@ class AppConfig:
     retry_backoff_seconds: float
 
 class Settings:
-    DATABASE_URL: str = os.getenv(
+    DATABASE_URL = os.getenv(
         "DATABASE_URL",
-        f"sqlite:///{PROJECT_ROOT / 'realview_chat.db'}"
+        f"sqlite:///{(PROJECT_ROOT / 'data' / 'realview_chat.db').resolve()}"
     )
 
 settings = Settings()

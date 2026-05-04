@@ -1,16 +1,17 @@
-from loguru import logger
 import uuid
-import contextvars
 import time
+import contextvars
 from pathlib import Path
-from flask import request
+
+from flask import request, g
+from loguru import logger
+
+from realview_chat.observability.metrics import *
 
 correlation_id_var = contextvars.ContextVar("correlation_id", default=None)
 
+
 def set_correlation_id(correlation_id: str | None = None) -> str:
-    """
-    Must ONLY be called at request boundary (Flask before_request).
-    """
     if correlation_id is None:
         correlation_id = str(uuid.uuid4())
 
@@ -19,11 +20,18 @@ def set_correlation_id(correlation_id: str | None = None) -> str:
 
 
 def get_correlation_id() -> str:
-    return correlation_id_var.get() or "no-correlation-id"
+    return correlation_id_var.get() or "-"
+
+logger.remove()  
+
+logger = logger.patch(
+    lambda r: r["extra"].setdefault("correlation_id", "-")
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
+
 
 logger.add(
     LOG_DIR / "app.log",
@@ -41,77 +49,112 @@ logger.add(
     format="{time} | {level} | {extra[correlation_id]} | {message}",
 )
 
+def log_event(event, layer, **kwargs):
+    cid = get_correlation_id()
+
+    if not event:
+        raise ValueError("event cannot be empty")
+
+    allowed_layers = {"api", "pipeline", "db", "app"}
+    if layer not in allowed_layers:
+        raise ValueError(f"invalid layer: {layer}")
+    
+    logger.bind(
+        correlation_id = cid,
+        layer = layer,
+        **kwargs
+    ).info(event)
+
+
+
 def init_request_logging(app):
 
     @app.before_request
     def _before_request():
+        g.start_time = time.time()
         set_correlation_id()
 
     @app.after_request
     def _after_request(response):
-        logger.bind(
-            correlation_id=get_correlation_id(),
-            layer="api",
+        duration = time.time() - g.start_time
+
+        API_REQUESTS_TOTAL.labels(
             method=request.method,
             path=request.path,
-            status_code=response.status_code,
-        ).info("request_completed")
+            status_code=response.status_code
+        ).inc()
+
+        api_request_duration_seconds.labels(
+            method=request.method,
+            path=request.path
+        ).observe(duration)
+
+        log_event(
+            "request_completed",
+            "api",
+            method=request.method,
+            path=request.path,
+            status_code=response.status_code
+        )
 
         return response
 
 def run_pipeline_step(step_name: str, func):
     start = time.time()
 
+    log_event("pipeline_step_started", "pipeline", step=step_name)
+
     try:
         result = func()
+        pipeline_runs_total.labels(status="success").inc()
         return result
 
     except Exception:
-        logger.bind(
-            correlation_id=get_correlation_id(),
-            layer="pipeline",
-            step=step_name,
-        ).exception("pipeline_step_failed")
+        pipeline_runs_total.labels(status="failed").inc()
+        log_event("pipeline_step_failed", "pipeline", step=step_name)
         raise
 
     finally:
-        logger.bind(
-            correlation_id=get_correlation_id(),
-            layer="pipeline",
+        elapsed = time.time() - start
+
+        pipeline_step_duration_seconds.labels(step=step_name).observe(elapsed)
+
+        log_event(
+            "pipeline_step_finished",
+            "pipeline",
             step=step_name,
-            elapsed_ms=(time.time() - start) * 1000,
-        ).info("pipeline_step_finished")
+            elapsed_ms=elapsed * 1000
+        )
 
 def db_operation(operation_name: str, func):
+    start = time.time()
+
     try:
         result = func()
 
-        logger.bind(
-            correlation_id=get_correlation_id(),
-            layer="db",
+        db_operations_total.labels(
             operation=operation_name,
-        ).info("db_operation_success")
+            status="success"
+        ).inc()
 
         return result
 
     except Exception:
-        logger.bind(
-            correlation_id=get_correlation_id(),
-            layer="db",
+        db_operations_total.labels(
             operation=operation_name,
-        ).exception("db_operation_failed")
+            status="failed"
+        ).inc()
+
+        log_event(
+            "db_operation_failed",
+            "db",
+            operation=operation_name
+        )
         raise
 
-def log_event(message: str, **kwargs):
-    logger.bind(
-        correlation_id=get_correlation_id(),
-        layer=kwargs.pop("layer", "app"),
-        **kwargs,
-    ).info(message)
+    finally:
+        elapsed = time.time() - start
 
-def log_error(message: str, **kwargs):
-    logger.bind(
-        correlation_id=get_correlation_id(),
-        layer=kwargs.pop("layer", "app"),
-        **kwargs,
-    ).error(message)
+        db_operation_duration_seconds.labels(
+            operation=operation_name
+        ).observe(elapsed)

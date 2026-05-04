@@ -80,7 +80,7 @@ class Image(Base):
 
     pass1_result = relationship("pass1_results", back_populates="image", uselist=False)
     pass2_result = relationship("pass2_results", back_populates="image", uselist=False)
-    image_id = Column(Integer, ForeignKey("images.id"))
+    #image_id = Column(Integer, ForeignKey("images.id"))
 
 class Case(Base):
     __tablename__ = "cases"

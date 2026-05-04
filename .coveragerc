@@ -1,0 +1,10 @@
+[run]
+omit =
+    */pipeline/*
+    */openai_client/*
+    */io/*
+    */utils/*
+    */run_system.py
+    */config.py
+    */logging_config.py
+    */observability/*

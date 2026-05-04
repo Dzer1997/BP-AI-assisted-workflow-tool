@@ -2,7 +2,8 @@ from pathlib import Path
 import sys
 import time
 
-from realview_chat.database.db import SessionLocal, init_db
+from realview_chat.database import db
+from realview_chat.observability.logging_config import set_correlation_id
 from realview_chat.pipeline.property_processor import process_property_from_folder
 from realview_chat.config import load_config
 from realview_chat.openai_client.responses import create_client
@@ -25,6 +26,7 @@ def run_scan_mode(client, db, delay_seconds=4, limit=None):
     processed_count = 0
 
     for path in case_folders:
+        set_correlation_id()
         if limit is not None and processed_count >= limit:
             print(f"Reached limit of {limit} cases. Stopping.")
             break
@@ -62,23 +64,22 @@ def run_scan_mode(client, db, delay_seconds=4, limit=None):
 
 
 def main():
-    init_db()
+    db.init_db()
     print("Database initialized successfully.")
-
-    db = SessionLocal()
+    session = db.SessionLocal()
 
     try:
         config = load_config()
         client = create_client(config)
         print(f"Initialized client with model: {config.openai_model}")
 
-        run_scan_mode(client, db)
+        run_scan_mode(client, session)
 
     except ValueError as e:
         sys.exit(f"Configuration Error: {e}")
 
     finally:
-        db.close()
+        session.close()
 
 
 if __name__ == "__main__":

@@ -1,18 +1,15 @@
 from pathlib import Path
-from flask import Flask, jsonify
+from flask import Flask, Response, abort, jsonify, send_file
 from flask_cors import CORS
-from realview_chat.config import init_config
+from realview_chat.config import CASES_ROOT, init_config
 from realview_chat.database import db
-from realview_chat.services.analysis_service import get_ground_truth_handler, reset_benchmarking_handler, serve_ground_truth_image_handler, serve_image_handler
+from realview_chat.services.analysis_service import get_ground_truth_handler, reset_benchmarking_handler, serve_ground_truth_image_handler
 from realview_chat.observability.logging_config import init_request_logging
-from web.backend.handlers.feedback_handlers import get_feedback_handler, post_feedback_handler
-from web.backend.handlers.properties_handlers import get_properties_handler
-from web.backend.handlers.stats_handler import get_stats_handler
-from web.backend.handlers.summary_handler import get_summary_handler
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from realview_chat.observability.metrics import HTTP_REQUESTS_TOTAL, REQUEST_DURATION
-
-
+from realview_chat.api.backend.handlers.feedback_handlers import get_feedback_handler, post_feedback_handler
+from realview_chat.api.backend.handlers.properties_handlers import get_properties_handler
+from realview_chat.api.backend.handlers.stats_handler import get_stats_handler
+from realview_chat.api.backend.handlers.summary_handler import get_summary_handler
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -28,10 +25,14 @@ init_request_logging(app)
 def get_properties():
     return jsonify(get_properties_handler())
 
+@app.route("/api/images/<path:filepath>")
+def serve_image(filepath):
+    file_path = CASES_ROOT / f"case_{filepath}"
 
-@app.route("/api/images/<property_id>/<path:filename>", methods=["GET"])
-def serve_image(property_id,filename):
-    return serve_image_handler(property_id, filename)
+    if not file_path.exists():
+        abort(404)
+
+    return send_file(file_path)
 
 @app.route("/api/feedback", methods=["GET"])
 def get_feedback():
@@ -64,7 +65,7 @@ def get_summary():
 
 @app.route("/metrics")
 def metrics():
-    return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 if __name__ == "__main__":
-    app.run(port=5001, debug=True)
+    app.run(host="0.0.0.0", port=5001, debug=True)
